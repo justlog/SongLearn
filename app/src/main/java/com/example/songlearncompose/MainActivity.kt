@@ -189,15 +189,6 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun Greeting(name: String) {
-    if(name == "Lior"){
-        Text(text = "fuck off $name");
-    }
-    else{
-        Text(text = "hello $name");
-    }
-}
-@Composable
 fun CustomCanvas(modifier: Modifier, audio: FloatArray){
     var width by remember { mutableStateOf(0) }
     var height by remember { mutableStateOf(0) }
