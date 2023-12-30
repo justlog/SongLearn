@@ -3,39 +3,55 @@ package com.example.songlearncompose
 import android.app.Activity
 import android.content.pm.ActivityInfo
 import android.content.res.Resources
-import android.media.AudioFormat
-import android.media.MediaCodec
-import android.media.MediaExtractor
-import android.media.MediaFormat
+import android.media.*
+import android.media.MediaMetadataRetriever.METADATA_KEY_DURATION
+import android.media.MediaMetadataRetriever.METADATA_KEY_SAMPLERATE
 import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.Canvas
+import androidx.compose.ui.graphics.drawscope.*
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.rememberScrollableState
+import androidx.compose.foundation.gestures.scrollable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.text.*
 import com.example.songlearncompose.ui.theme.SongLearnComposeTheme
 import kotlinx.coroutines.*
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import kotlin.math.abs
+import kotlin.math.log
 import kotlin.math.max
 
-class PCMByteArray(var rawPCM: ByteArray, var PCMFormat: Int)
+class PCMByteArray(var rawPCM: ByteArray, var PCMFormat: Int, var sampleRate: Int)
 
 class NormalizedAudioTrack {
     lateinit var audio: FloatArray;
+    var duration: Int
+    var sampleRate: Int
+    var sizeInSamples: Int
 
-    constructor(pcmArr: PCMByteArray) {
+    constructor(pcmArr: PCMByteArray, duration: Int) {
+        this.duration = duration;
+        this.sampleRate = pcmArr.sampleRate;
+        this.sizeInSamples = this.sampleRate*this.duration;
         when (pcmArr.PCMFormat) {
             AudioFormat.ENCODING_PCM_16BIT -> {
                 val shortOut = ShortArray(pcmArr.rawPCM.size/2);
@@ -64,9 +80,19 @@ class MainActivity : ComponentActivity() {
     private fun ParseAudioFile(fileId: Int, res: Resources): PCMByteArray
     {
 
-        var PCMArray: PCMByteArray = PCMByteArray(ByteArray(0),0);
+        var PCMArray: PCMByteArray = PCMByteArray(ByteArray(0),0, 0);
 
         var fd = res.openRawResourceFd(fileId);
+
+        var mmr: MediaMetadataRetriever = MediaMetadataRetriever();
+        mmr.setDataSource(fd.fileDescriptor);
+        val sr = mmr.extractMetadata(METADATA_KEY_SAMPLERATE)?.toInt();
+        if(sr != null){
+            PCMArray.sampleRate = sr;
+        }
+        mmr.close();
+
+
 
         var extractor: MediaExtractor = MediaExtractor();
         extractor.setDataSource(fd);
@@ -145,42 +171,75 @@ class MainActivity : ComponentActivity() {
                     Column(modifier = Modifier.fillMaxSize(),horizontalAlignment = Alignment.CenterHorizontally) {
                         TextButton(modifier=Modifier.fillMaxSize(),onClick = {
                             //TODO: Handle different PCM encoding (currently make 16 bit work per sine.wav)
-                            PCMArray = ParseAudioFile(R.raw.sine,resources);
+                            val fileHandle = R.raw.plymouth;
+                            var player: MediaPlayer = MediaPlayer.create(applicationContext, fileHandle);
+                            //player.setlis
+                            PCMArray = ParseAudioFile(fileHandle, resources);
                             assert(PCMArray != null);
-                            normalizedAudio = NormalizedAudioTrack(PCMArray!!);
+                            normalizedAudio = NormalizedAudioTrack(PCMArray!!, player.duration);
                             assert(normalizedAudio != null);
                             loaded = true;
+                            //NOTE: Just in place for later reference when we want to play audio.
+                            player.start();
                         }) {
                             Text(text = "Click to load file");
                         }
                     }
                 }
                 else{
-//                    Box(modifier = Modifier
-//                        .fillMaxSize()
-//                        .background(Color.White)){
-////                        CustomCanvas(modifier = Modifier.fillMaxSize(), normalizedAudio.audio);
-//                    }
-                    //CustomCanvas(modifier = Modifier.fillMaxSize(), audio = normalizedAudio.audio);
                     Box(modifier=Modifier.fillMaxSize(), contentAlignment = Alignment.Center)
                     {
-                        Canvas(modifier=Modifier.fillMaxSize().onGloballyPositioned { coordinates ->
-                            val d = density.density;
-                            width = (coordinates.size.width / d).toInt();
-                            height = (coordinates.size.height / d).toInt();
-                        }, onDraw = {
-                            val mid = Offset(this.center.x, this.center.y);
-                            val width = size.width;
-                            val height = size.height;
-                            val size = normalizedAudio.audio.size;
-                            val recp: Float = 1.0f/size;
-                            for(i in 0 .. size){
-                                val x: Float = i * recp * width;
-                                val barHeight: Float = -normalizedAudio.audio[i]*(height/2);
-                                drawLine(Color.Black, Offset(x, this.center.y), Offset(x, this.center.y+barHeight), 1.0f);
-                            }
-//                            drawLine(Color.Black, Offset(this.center.x, this.center.y), Offset(this.center.x, height));
-                        });
+                        //TODO: Last time you stopped trying to implement input onto the drawing.
+                        //I think what I want to do is to try and have a lien go across the waveform as the
+                        //audio file is playing just to see if it works. Afterwards, I can try
+                        //to implement a click event where the audio file seeks to the corresponding point
+                        //on the waveform.
+                        var offset by remember { mutableStateOf(0f) };
+                        var redraw by remember { mutableStateOf(0) };
+                        Canvas(modifier= Modifier
+                            .fillMaxSize()
+                            .clipToBounds()
+                            .background(Color.White)
+                            .scrollable(
+                                orientation = Orientation.Horizontal,
+                                state = rememberScrollableState { delta ->
+//                                    redraw++;
+                                    offset += delta
+//                                    Log.i("", "offset change:${delta}, offset:${offset}");
+                                    delta
+                                }
+                            ),
+                            onDraw = {
+                                    val width = size.width;
+                                    val height = size.height;
+                                    //val blockSize = (normalizedAudio*normalizedAudio.duration*0.2).toInt();
+//                                    val size = (1.0*normalizedAudio.sampleRate*normalizedAudio.duration).toInt();
+                                    val windowSize = normalizedAudio.sampleRate.toInt();
+                                    val size = windowSize;
+                                    val recp: Float = 1.0f/size;
+//                                    Log.i("","width:${width} height:${height}");
+//                                    Log.i("", "offset: ${offset}");
+                                    var localOffset = -offset;
+                                    var startIdx: Int = (windowSize.toFloat() * (localOffset.toFloat()/width.toFloat())).toInt();
+                                    if(startIdx+size >= normalizedAudio.sizeInSamples){
+                                        startIdx = normalizedAudio.sizeInSamples-size-1;
+                                    }
+                                    else if(startIdx < 0){
+                                        startIdx = 0;
+                                    }
+                                    Log.i("","startIdx:${startIdx}");
+                                    for(i in startIdx .. startIdx+size){
+                                        val x: Float = (i-startIdx).toFloat() * recp.toFloat() * width;
+                                        if(i >= normalizedAudio.audio.size){
+                                            Log.i("", "startIdx:${startIdx}, end:${startIdx+size}");
+                                        }
+                                        else if(i < 0){
+                                            Log.i("", "idx negative:${i}, startIdx:${startIdx}");
+                                        }
+                                        val barHeight: Float = -normalizedAudio.audio[i]*(height/2);
+                                        drawLine(Color.Black, Offset(x, this.center.y), Offset(x, this.center.y+barHeight), 1.0f);
+                                    }
+                        })
                     }
                 }
             }
@@ -188,6 +247,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+/*
 @Composable
 fun CustomCanvas(modifier: Modifier, audio: FloatArray){
     var width by remember { mutableStateOf(0) }
@@ -214,3 +274,4 @@ fun CustomCanvas(modifier: Modifier, audio: FloatArray){
                 }
             })
 }
+ */
