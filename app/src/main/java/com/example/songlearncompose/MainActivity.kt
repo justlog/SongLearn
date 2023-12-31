@@ -4,21 +4,20 @@ import android.app.Activity
 import android.content.pm.ActivityInfo
 import android.content.res.Resources
 import android.media.*
-import android.media.MediaMetadataRetriever.METADATA_KEY_DURATION
 import android.media.MediaMetadataRetriever.METADATA_KEY_SAMPLERATE
 import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.Canvas
-import androidx.compose.ui.graphics.drawscope.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.gestures.rememberScrollableState
+import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.gestures.scrollable
-import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -27,17 +26,12 @@ import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.text.*
 import com.example.songlearncompose.ui.theme.SongLearnComposeTheme
-import kotlinx.coroutines.*
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import kotlin.math.abs
-import kotlin.math.log
 import kotlin.math.max
 
 class PCMByteArray(var rawPCM: ByteArray, var PCMFormat: Int, var sampleRate: Int)
@@ -194,41 +188,64 @@ class MainActivity : ComponentActivity() {
                         //audio file is playing just to see if it works. Afterwards, I can try
                         //to implement a click event where the audio file seeks to the corresponding point
                         //on the waveform.
-                        var offset by remember { mutableStateOf(0f) };
-                        var redraw by remember { mutableStateOf(0) };
+                        var horizontalOffset by remember { mutableStateOf(0f) };
+                        var verticalOffset by remember { mutableStateOf(0f) };
+                        var windowScale by remember { mutableStateOf(1f)};
+                        var state = rememberTransformableState { zoomChange, panChange, _ ->
+                            horizontalOffset += panChange.x;
+//                            zoomChange *= 100/windowScale
+                            //TODO: Scale zoom changes by how zoomed in we are.
+                            //TODO: Check why zoom changes also seem to register pan changes (i.e. when we get zoom changes, we also get pan changes)
+                            windowScale *= zoomChange;
+                            windowScale = windowScale.coerceIn(0.1f, 100f);
+                        }
                         Canvas(modifier= Modifier
                             .fillMaxSize()
                             .clipToBounds()
                             .background(Color.White)
-                            .scrollable(
-                                orientation = Orientation.Horizontal,
-                                state = rememberScrollableState { delta ->
-//                                    redraw++;
-                                    offset += delta
-//                                    Log.i("", "offset change:${delta}, offset:${offset}");
-                                    delta
-                                }
-                            ),
+                            .transformable(state)
+//                            .pointerInput(Unit){
+//                                               detectTransformGestures(
+//                                                   onGesture = { centroid, pan, gestureZoom, gestureRotate ->
+//                                                       horizontalOffset += pan.x;
+//                                                       windowScale = gestureZoom;
+//                                                   }
+//                                               )
+//                            }
+//                            .scrollable(
+//                                orientation = Orientation.Horizontal,
+//                                state = rememberScrollableState { delta ->
+//                                    horizontalOffset += delta
+//                                    delta
+//                                }
+//                            )
+//                            .scrollable(
+//                                orientation = Orientation.Vertical,
+//                                state = rememberScrollableState { delta ->
+//                                    verticalOffset += delta;
+//                                    delta;
+//                                }
+//                            )
+                            ,
                             onDraw = {
-                                    val width = size.width;
-                                    val height = size.height;
-                                    //val blockSize = (normalizedAudio*normalizedAudio.duration*0.2).toInt();
-//                                    val size = (1.0*normalizedAudio.sampleRate*normalizedAudio.duration).toInt();
-                                    val windowSize = normalizedAudio.sampleRate.toInt();
-                                    val size = windowSize;
-                                    val recp: Float = 1.0f/size;
-//                                    Log.i("","width:${width} height:${height}");
-//                                    Log.i("", "offset: ${offset}");
-                                    var localOffset = -offset;
-                                    var startIdx: Int = (windowSize.toFloat() * (localOffset.toFloat()/width.toFloat())).toInt();
-                                    if(startIdx+size >= normalizedAudio.sizeInSamples){
-                                        startIdx = normalizedAudio.sizeInSamples-size-1;
-                                    }
-                                    else if(startIdx < 0){
-                                        startIdx = 0;
-                                    }
-                                    Log.i("","startIdx:${startIdx}");
-                                    for(i in startIdx .. startIdx+size){
+                                val width = size.width;
+                                val height = size.height;
+                                var windowSize = ((normalizedAudio.sampleRate.toFloat()*(1f/windowScale)).toInt()).coerceIn(0, normalizedAudio.sampleRate*3);
+                                var localOffset = -horizontalOffset;
+                                var startIdx: Int = (windowSize.toFloat() * (localOffset.toFloat()/width.toFloat())).toInt();
+                                val size = windowSize;
+                                val recp: Float = 1.0f/size;
+                                if(startIdx+size >= normalizedAudio.sizeInSamples){
+                                    startIdx = normalizedAudio.sizeInSamples-size-1;
+                                }
+                                else if(startIdx < 0){
+                                    startIdx = 0;
+                                }
+//                                Log.i("","startIdx:${startIdx}");
+//                                Log.i("", "verticalOffset:${verticalOffset}");
+//                                Log.i("", "horizontalOffset:${horizontalOffset}");
+//                                Log.i("", "windowScale:${windowScale}");
+                                for(i in startIdx .. startIdx+size){
                                         val x: Float = (i-startIdx).toFloat() * recp.toFloat() * width;
                                         if(i >= normalizedAudio.audio.size){
                                             Log.i("", "startIdx:${startIdx}, end:${startIdx+size}");
