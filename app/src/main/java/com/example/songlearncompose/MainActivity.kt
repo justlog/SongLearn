@@ -191,26 +191,35 @@ class MainActivity : ComponentActivity() {
                         var horizontalOffset by remember { mutableStateOf(0f) };
                         var verticalOffset by remember { mutableStateOf(0f) };
                         var windowScale by remember { mutableStateOf(1f)};
-                        var state = rememberTransformableState { zoomChange, panChange, _ ->
-                            horizontalOffset += panChange.x;
-//                            zoomChange *= 100/windowScale
-                            //TODO: Scale zoom changes by how zoomed in we are.
-                            //TODO: Check why zoom changes also seem to register pan changes (i.e. when we get zoom changes, we also get pan changes)
-                            windowScale *= zoomChange;
-                            windowScale = windowScale.coerceIn(0.1f, 100f);
-                        }
+                        var lastMiddleSample: Int = 0;
+                        var lastStartIdx: Int = 0;
+                        var scaleChanged: Boolean = false;
                         Canvas(modifier= Modifier
                             .fillMaxSize()
                             .clipToBounds()
                             .background(Color.White)
-                            .transformable(state)
+                            .pointerInput(Unit){
+                                               detectTransformGestures { centroid, pan, zoom, rotation ->
+                                                   horizontalOffset = pan.x;
+                                                   windowScale *= zoom;
+                                                   windowScale = windowScale.coerceIn(0.1f, 100f);
+                                                   if(zoom != 1.0f) scaleChanged = true;
+                                               }
+                            }
                             ,
                             onDraw = {
                                 val width = size.width;
                                 val height = size.height;
                                 var windowSize = ((normalizedAudio.sampleRate.toFloat()*(1f/windowScale)).toInt()).coerceIn(0, normalizedAudio.sampleRate*3);
                                 var localOffset = -horizontalOffset;
-                                var startIdx: Int = (windowSize.toFloat() * (localOffset.toFloat()/width.toFloat())).toInt();
+                                var startIdx: Int;
+                                if(scaleChanged) {
+                                    startIdx = lastMiddleSample - (windowSize/2);
+                                    scaleChanged = false;
+                                }
+                                else{
+                                    startIdx = lastStartIdx + (windowSize.toFloat() * (localOffset.toFloat()/width.toFloat())).toInt();
+                                }
                                 val size = windowSize;
                                 val recp: Float = 1.0f/size;
                                 if(startIdx+size >= normalizedAudio.sizeInSamples){
@@ -219,10 +228,9 @@ class MainActivity : ComponentActivity() {
                                 else if(startIdx < 0){
                                     startIdx = 0;
                                 }
-//                                Log.i("","startIdx:${startIdx}");
-//                                Log.i("", "verticalOffset:${verticalOffset}");
-//                                Log.i("", "horizontalOffset:${horizontalOffset}");
-//                                Log.i("", "windowScale:${windowScale}");
+                                lastMiddleSample = (startIdx+(startIdx+size)) / 2;
+                                lastStartIdx = startIdx;
+
                                 for(i in startIdx .. startIdx+size){
                                         val x: Float = (i-startIdx).toFloat() * recp.toFloat() * width;
                                         if(i >= normalizedAudio.audio.size){
