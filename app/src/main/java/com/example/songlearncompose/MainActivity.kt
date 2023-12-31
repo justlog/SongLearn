@@ -204,28 +204,6 @@ class MainActivity : ComponentActivity() {
                             .clipToBounds()
                             .background(Color.White)
                             .transformable(state)
-//                            .pointerInput(Unit){
-//                                               detectTransformGestures(
-//                                                   onGesture = { centroid, pan, gestureZoom, gestureRotate ->
-//                                                       horizontalOffset += pan.x;
-//                                                       windowScale = gestureZoom;
-//                                                   }
-//                                               )
-//                            }
-//                            .scrollable(
-//                                orientation = Orientation.Horizontal,
-//                                state = rememberScrollableState { delta ->
-//                                    horizontalOffset += delta
-//                                    delta
-//                                }
-//                            )
-//                            .scrollable(
-//                                orientation = Orientation.Vertical,
-//                                state = rememberScrollableState { delta ->
-//                                    verticalOffset += delta;
-//                                    delta;
-//                                }
-//                            )
                             ,
                             onDraw = {
                                 val width = size.width;
