@@ -1,14 +1,18 @@
 package com.example.songlearncompose
 
 import android.app.Activity
+import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.content.res.Resources
 import android.media.*
 import android.media.MediaMetadataRetriever.METADATA_KEY_SAMPLERATE
+import android.net.Uri
 import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AppCompatActivity
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.Orientation
@@ -29,6 +33,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import com.example.songlearncompose.ui.theme.SongLearnComposeTheme
+import java.io.FileDescriptor
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import kotlin.math.abs
@@ -69,17 +74,20 @@ class MainActivity : ComponentActivity() {
 
     lateinit var PCMArray: PCMByteArray;
     lateinit var normalizedAudio: NormalizedAudioTrack;
-    var isLoaded: Boolean = false;
+    var isLoaded: Boolean by mutableStateOf(false);
 
-    private fun ParseAudioFile(fileId: Int, res: Resources): PCMByteArray
+//    private fun ParseAudioFile(fileId: Int, res: Resources): PCMByteArray
+    private fun ParseAudioFile(fileDesc: FileDescriptor): PCMByteArray
     {
 
         var PCMArray: PCMByteArray = PCMByteArray(ByteArray(0),0, 0);
 
-        var fd = res.openRawResourceFd(fileId);
+
+//        var fd = res.openRawResourceFd(fileId);
 
         var mmr: MediaMetadataRetriever = MediaMetadataRetriever();
-        mmr.setDataSource(fd.fileDescriptor);
+//        mmr.setDataSource(fd.fileDescriptor);
+        mmr.setDataSource(fileDesc);
         val sr = mmr.extractMetadata(METADATA_KEY_SAMPLERATE)?.toInt();
         if(sr != null){
             PCMArray.sampleRate = sr;
@@ -89,7 +97,8 @@ class MainActivity : ComponentActivity() {
 
 
         var extractor: MediaExtractor = MediaExtractor();
-        extractor.setDataSource(fd);
+        extractor.setDataSource(fileDesc);
+//        extractor.setDataSource(fd);
 
         var decoder: MediaCodec? = null;
         var format: MediaFormat? = null;
@@ -140,7 +149,7 @@ class MainActivity : ComponentActivity() {
 
             decoder.release();
             extractor.release();
-            fd.close();
+//            fd.close();
         }
 
         else{
@@ -151,30 +160,40 @@ class MainActivity : ComponentActivity() {
         return PCMArray;
     }
 
+    fun openFile(pickerInitialUri: Uri)
+    {
+    }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        val getContent = registerForActivityResult(ActivityResultContracts.GetContent()) {uri: Uri? ->
+            if(uri != null){
+                val fileDescriptor = contentResolver.openFileDescriptor(uri, "r")
+                val fileHandle = fileDescriptor?.fd;
+                if(fileHandle != null){
+                    var player: MediaPlayer = MediaPlayer.create(applicationContext, uri);
+                    PCMArray = ParseAudioFile(fileDescriptor.fileDescriptor);
+                    assert(PCMArray != null);
+                    normalizedAudio = NormalizedAudioTrack(PCMArray!!, player.duration);
+                    assert(normalizedAudio != null);
+                    isLoaded = true;
+                    player.start();
+                    fileDescriptor.close()
+                }
+            }
+        }
         setContent {
             SongLearnComposeTheme {
-                var width by remember { mutableStateOf(0) }
-                var height by remember { mutableStateOf(0) }
-                var loaded by remember {mutableStateOf(false);}
-                val density = LocalDensity.current;
+//                var width by remember { mutableStateOf(0) }
+//                var height by remember { mutableStateOf(0) }
+//                var loaded by remember {mutableStateOf(false);}
+//                val density = LocalDensity.current;
                 val activity = LocalContext.current as Activity;
                 activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE;
-                if(!loaded){
+                if(!isLoaded){
                     Column(modifier = Modifier.fillMaxSize(),horizontalAlignment = Alignment.CenterHorizontally) {
                         TextButton(modifier=Modifier.fillMaxSize(),onClick = {
                             //TODO: Handle different PCM encoding (currently make 16 bit work per sine.wav)
-                            val fileHandle = R.raw.plymouth;
-                            var player: MediaPlayer = MediaPlayer.create(applicationContext, fileHandle);
-                            //player.setlis
-                            PCMArray = ParseAudioFile(fileHandle, resources);
-                            assert(PCMArray != null);
-                            normalizedAudio = NormalizedAudioTrack(PCMArray!!, player.duration);
-                            assert(normalizedAudio != null);
-                            loaded = true;
-                            //NOTE: Just in place for later reference when we want to play audio.
-                            player.start();
+                            getContent.launch("audio/*");
                         }) {
                             Text(text = "Click to load file");
                         }
@@ -189,7 +208,6 @@ class MainActivity : ComponentActivity() {
                         //to implement a click event where the audio file seeks to the corresponding point
                         //on the waveform.
                         var horizontalOffset by remember { mutableStateOf(0f) };
-                        var verticalOffset by remember { mutableStateOf(0f) };
                         var windowScale by remember { mutableStateOf(1f)};
                         var lastMiddleSample: Int = 0;
                         var lastStartIdx: Int = 0;
@@ -210,7 +228,8 @@ class MainActivity : ComponentActivity() {
                             onDraw = {
                                 val width = size.width;
                                 val height = size.height;
-                                var windowSize = ((normalizedAudio.sampleRate.toFloat()*(1f/windowScale)).toInt()).coerceIn(0, normalizedAudio.sampleRate*3);
+                                val MAX_WINDOW = normalizedAudio.sampleRate*3;
+                                var windowSize = ((normalizedAudio.sampleRate.toFloat()*(1f/windowScale)).toInt()).coerceIn(0, MAX_WINDOW);
                                 var localOffset = -horizontalOffset;
                                 var startIdx: Int;
                                 if(scaleChanged) {
@@ -231,7 +250,37 @@ class MainActivity : ComponentActivity() {
                                 lastMiddleSample = (startIdx+(startIdx+size)) / 2;
                                 lastStartIdx = startIdx;
 
-                                for(i in startIdx .. startIdx+size){
+                                var windowToMaxRatio = 1.0f-windowSize.toFloat()/MAX_WINDOW.toFloat();
+                                if(windowSize > 24000){//TEMPORARY: above half a second of 48,000khz file
+                                    Log.i("", "windowSize:${windowSize}");
+                                    val stepSize = 400;
+                                    for(i in startIdx .. startIdx+size step stepSize){
+                                        var endIdx = i+stepSize;
+                                        if(endIdx >= startIdx+size){
+                                            endIdx = startIdx+size - i;
+                                        }
+                                        val sliced = normalizedAudio.audio.slice(IntRange(i, endIdx));
+                                        var avg = 0.0f;
+                                        for(sample in sliced){
+                                            avg += abs(sample);
+                                        }
+//                                        val avg = normalizedAudio.audio.slice(IntRange(i, endIdx)).sum()/(endIdx-i).toFloat();
+                                        avg /= (endIdx-i).toFloat();
+                                        val x: Float = (i-startIdx).toFloat() * recp.toFloat() * width;
+                                        if(i >= normalizedAudio.audio.size){
+                                            Log.i("", "startIdx:${startIdx}, end:${startIdx+size}");
+                                        }
+                                        else if(i < 0){
+                                            Log.i("", "idx negative:${i}, startIdx:${startIdx}");
+                                        }
+//                                        val barHeight: Float = -normalizedAudio.audio[i]*(height/2);
+                                        val barHeight: Float = -avg*(height/2);
+                                        drawLine(Color.Black, Offset(x, this.center.y), Offset(x, this.center.y+barHeight), 1.0f);
+                                        drawLine(Color.Black, Offset(x, this.center.y), Offset(x, this.center.y-barHeight), 1.0f);
+                                    }
+                                }
+                                else{
+                                    for(i in startIdx .. startIdx+size){
                                         val x: Float = (i-startIdx).toFloat() * recp.toFloat() * width;
                                         if(i >= normalizedAudio.audio.size){
                                             Log.i("", "startIdx:${startIdx}, end:${startIdx+size}");
@@ -242,6 +291,7 @@ class MainActivity : ComponentActivity() {
                                         val barHeight: Float = -normalizedAudio.audio[i]*(height/2);
                                         drawLine(Color.Black, Offset(x, this.center.y), Offset(x, this.center.y+barHeight), 1.0f);
                                     }
+                                }
                         })
                     }
                 }
