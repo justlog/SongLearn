@@ -29,14 +29,16 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import kotlin.math.abs
 import kotlin.math.max
+import kotlin.system.measureNanoTime
 
-class PCMByteArray(var rawPCM: ByteArray, var PCMFormat: Int, var sampleRate: Int)
+class PCMByteArray(var rawPCM: ByteArray, var PCMFormat: Int, var sampleRate: Int, var actualSizeInSamples: Int)
 
 class NormalizedAudioTrack {
     lateinit var audio: FloatArray;
     var durationInMs: Int
     var sampleRate: Int
     var sizeInSamples: Int
+    val TAG = "NormalizeAudio";
 
     constructor(pcmArr: PCMByteArray, duration: Int) {
         this.durationInMs = duration;
@@ -45,7 +47,7 @@ class NormalizedAudioTrack {
         this.sizeInSamples = (this.sampleRate.toFloat()*(this.durationInMs.toFloat()/1000f)).toInt();
         when (pcmArr.PCMFormat) {
             AudioFormat.ENCODING_PCM_16BIT -> {
-                val shortOut = ShortArray(pcmArr.rawPCM.size/2);
+                val shortOut = ShortArray(pcmArr.actualSizeInSamples/2);
                 //TODO: Try to write the PCM conversion yourself to make sure you understand how it works.
                 ByteBuffer.wrap(pcmArr.rawPCM).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(shortOut);
                 val maxPos = shortOut.max();
@@ -71,9 +73,9 @@ class MainActivity : ComponentActivity() {
 
     private fun ParseAudioFile(fileDesc: FileDescriptor): PCMByteArray
     {
-
-        var PCMArray: PCMByteArray = PCMByteArray(ByteArray(0),0, 0);
-
+        val DECODE_SIZE_INPUT = 524288 //5mb
+        //20mb upfront
+        var PCMArray: PCMByteArray = PCMByteArray(ByteArray(1024*1024*80),0, 0, 0);
 
 
         var mmr: MediaMetadataRetriever = MediaMetadataRetriever();
@@ -108,27 +110,36 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        var doneParsing = false;
+        var offset = 0;
+
         if(decoder != null){
+            format?.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, DECODE_SIZE_INPUT);
             decoder.configure(format, null, null, 0);
             decoder.start();
 
             while(true){
-                val inputBufferIndex = decoder.dequeueInputBuffer(-1);
-                if(inputBufferIndex >= 0){
-                    val readBuffer: ByteBuffer? = decoder.getInputBuffer(inputBufferIndex);
-                    if(readBuffer != null){
-                        val samplesRead = extractor.readSampleData(readBuffer, 0);
-                        if(samplesRead < 0){//No more samples to read.
-                            decoder.queueInputBuffer(inputBufferIndex, 0, 0,0, MediaCodec.BUFFER_FLAG_END_OF_STREAM);
-                            break;
+                do{
+                    val inputBufferIndex = decoder.dequeueInputBuffer(0);
+                    if(inputBufferIndex >= 0){
+                        val readBuffer: ByteBuffer? = decoder.getInputBuffer(inputBufferIndex);
+                        if(readBuffer != null){
+                            val samplesRead = extractor.readSampleData(readBuffer, 0);
+                            if(samplesRead < 0){//No more samples to read.
+                                Log.i("decoding", "no more samples!");
+                                decoder.queueInputBuffer(inputBufferIndex, 0, 0,0, MediaCodec.BUFFER_FLAG_END_OF_STREAM);
+                                doneParsing = true;
+                                break;
+                            }
+                            decoder.queueInputBuffer(inputBufferIndex, 0, samplesRead, extractor.sampleTime, 0);
+                            extractor.advance();
                         }
-                        decoder.queueInputBuffer(inputBufferIndex, 0, samplesRead, extractor.sampleTime, 0);
-                        extractor.advance();
                     }
-                }
+                }while(!doneParsing && inputBufferIndex >= 0);
 
                 val bufferInfo: MediaCodec.BufferInfo = MediaCodec.BufferInfo();
                 val outputBufferIndex = decoder.dequeueOutputBuffer(bufferInfo, -1);
+//                Log.i("decoding", "outputbufferindx:${outputBufferIndex}");
                 if(outputBufferIndex >= 0){
                     val outputBuffer: ByteBuffer? = decoder.getOutputBuffer(outputBufferIndex);
                     if(outputBuffer != null){
@@ -136,28 +147,34 @@ class MainActivity : ComponentActivity() {
                             Log.w("decoding", "bufferInfo.size=0");
                         }
                         else{
-//                            Log.i("decoding", "found data!");
                             val pcmData: ByteArray = ByteArray(bufferInfo.size);
                             outputBuffer.get(pcmData);
-                            PCMArray.rawPCM = PCMArray.rawPCM.plus(pcmData);
+//                            PCMArray.rawPCM = PCMArray.rawPCM.plus(pcmData);
+                            pcmData.copyInto(PCMArray.rawPCM, offset, 0, bufferInfo.size-1);
+                            offset += bufferInfo.size;
                         }
-//                        assert(bufferInfo.size > 0);
+                        if(bufferInfo.flags == MediaCodec.BUFFER_FLAG_END_OF_STREAM){
+                            decoder.releaseOutputBuffer(outputBufferIndex, false);
+                            break;
+                        }
                     }
                     decoder.releaseOutputBuffer(outputBufferIndex, false);
                 }
             }
+            PCMArray.actualSizeInSamples = offset+1;
+            Log.i("decoding", "final size:${PCMArray.actualSizeInSamples}");
 
 
             decoder.release();
             extractor.release();
             Log.i("decoding", "done!");
-//            fd.close();
         }
+        extractor.release();
 
-        else{
-            Log.e("Parse", "Could not create decoder!");
-            assert(false);
-        }
+//        else{
+//            Log.e("Parse", "Could not create decoder!");
+//            assert(false);
+//        }
 
         return PCMArray;
     }
@@ -166,30 +183,21 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         val getContent = registerForActivityResult(ActivityResultContracts.GetContent()) {uri: Uri? ->
             if(uri != null){
-                var uriName = uri;
-                //NOTE: Possibly totally useless. decoding the mp3 seems to work fine. now just need to get it fast.
-//                if(uri.path?.contains("mp3") == true){//convert first
-//                    val string = FFmpegKitConfig.getSafParameterForRead(this.applicationContext, uri);
-//                    val outputFile = File("${this.applicationContext.externalCacheDir}/temp.wav");
-//                    val command = "-y -i ${string} -acodec pcm_s16le -c copy ${outputFile.path}";
-//                    val session: FFmpegSession = FFmpegKit.execute(command);
-//                    if(ReturnCode.isSuccess(session.returnCode)){
-//                        uriName = outputFile.toUri();
-//                    }
-//                    else{
-//                        Log.w("", String.format("Command failed with state %s and rc %s.%s", session.getState(), session.getReturnCode(), session.getFailStackTrace()));
-//                        assert(false);
-//                    }
-//                }
-                val fileDescriptor = contentResolver.openFileDescriptor(uriName, "r")
+                val fileDescriptor = contentResolver.openFileDescriptor(uri, "r")
                 val fileHandle = fileDescriptor?.fd;
                 if(fileHandle != null){
-                    audioPlayer = MediaPlayer.create(applicationContext, uriName);
-                    PCMArray = ParseAudioFile(fileDescriptor.fileDescriptor);
+                    audioPlayer = MediaPlayer.create(applicationContext, uri);
+                    val elapsedParse = measureNanoTime {
+                        PCMArray = ParseAudioFile(fileDescriptor.fileDescriptor);
+                    }
+                    Log.i("main", "elapsedParse:${elapsedParse}");
                     Log.i("main", "parsedaudiofile");
                     assert(PCMArray != null);
-                    normalizedAudio = NormalizedAudioTrack(PCMArray!!, audioPlayer.duration);
+                    val elapsedNormalize = measureNanoTime {
+                        normalizedAudio = NormalizedAudioTrack(PCMArray!!, audioPlayer.duration);
+                    }
                     Log.i("main", "normalized audio");
+                    Log.i("main", "elapsedNormalize:${elapsedNormalize}");
                     assert(normalizedAudio != null);
                     isLoaded = true;
                     audioPlayer.start();
@@ -236,7 +244,8 @@ class MainActivity : ComponentActivity() {
                                                detectTransformGestures { centroid, pan, zoom, rotation ->
                                                    horizontalOffset = pan.x;
                                                    windowScale *= zoom;
-                                                   windowScale = windowScale.coerceIn(0.1f, 100f);
+                                                   windowScale = windowScale.coerceIn(0.001f, 100f);
+//                                                   Log.i("canvas", "scale:${windowScale}");
                                                    if(zoom != 1.0f) scaleChanged = true;
                                                }
                             }
@@ -244,8 +253,10 @@ class MainActivity : ComponentActivity() {
                             onDraw = {
                                 val width = size.width;
                                 val height = size.height;
-                                val MAX_WINDOW = normalizedAudio.sampleRate*3;
-                                var windowSize = ((normalizedAudio.sampleRate.toFloat()*(1f/windowScale)).toInt()).coerceIn(0, MAX_WINDOW);
+//                                val MAX_WINDOW = normalizedAudio.sampleRate*10;
+//                                var windowSize = ((normalizedAudio.sampleRate.toFloat()*(1f/windowScale)).toInt()).coerceIn(0, MAX_WINDOW);
+                                var windowSize = ((normalizedAudio.sampleRate.toFloat()*(1f/windowScale)).toInt());
+                                if(windowSize < 0) windowSize = 0;
                                 var localOffset = -horizontalOffset;
                                 var startIdx: Int;
                                 if(scaleChanged) {
@@ -266,7 +277,7 @@ class MainActivity : ComponentActivity() {
                                 lastMiddleSample = (startIdx+(startIdx+size)) / 2;
                                 lastStartIdx = startIdx;
 
-                                var windowToMaxRatio = 1.0f-windowSize.toFloat()/MAX_WINDOW.toFloat();
+//                                var windowToMaxRatio = 1.0f-windowSize.toFloat()/MAX_WINDOW.toFloat();
                                 if(windowSize > 24000){//TEMPORARY: above half a second of 48,000khz file
 //                                    Log.i("", "windowSize:${windowSize}");
                                     val stepSize = 400;
@@ -275,6 +286,7 @@ class MainActivity : ComponentActivity() {
                                         if(endIdx >= startIdx+size){
                                             endIdx = startIdx+size - i;
                                         }
+                                        if(endIdx >= normalizedAudio.audio.size) endIdx = normalizedAudio.audio.size-1;
 //                                        Log.i("canvas", "i:${i} endIdx:${endIdx}");
                                         val sliced = normalizedAudio.audio.slice(IntRange(i, endIdx));
                                         var avg = 0.0f;
